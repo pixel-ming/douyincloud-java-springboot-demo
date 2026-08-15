@@ -18,7 +18,7 @@ public class HelloController {
     private String envMark;
 
     @GetMapping("/api/hello")
-    public JsonResponse hello(@RequestParam(value = "target", defaultValue = "mongodb") String target) {
+    public JsonResponse hello(@RequestParam(value = "target", defaultValue = "redis") String target) {
         JsonResponse response = new JsonResponse();
         try {
             HelloService helloService = factory.getHelloService(target);
