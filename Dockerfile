@@ -13,6 +13,7 @@ FROM public-cn-beijing.cr.volces.com/public/maven:3-jdk-8-slim
 WORKDIR /opt/application
 COPY --from=build /opt/application/target/douyincloud-demo-0.0.1-SNAPSHOT.jar ./target/douyincloud-demo-0.0.1-SNAPSHOT.jar
 COPY run.sh ./run.sh
+RUN chmod 755 /opt/application/run.sh
 
 EXPOSE 8000
 
