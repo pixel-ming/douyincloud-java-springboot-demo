@@ -1,0 +1,43 @@
+# 仅用于测试 classpath，不进入正式 JAR。
+server:
+  address: 127.0.0.1
+  port: 18000
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/leaderboard?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${LOCAL_MYSQL_USERNAME:root}
+    password: ${LOCAL_MYSQL_PASSWORD:}
+  redis:
+    host: 127.0.0.1
+    port: 16379
+    database: 0
+    username: ''
+    password: ''
+  sql:
+    init:
+      mode: never
+leaderboard:
+  environment: local-rehearsal
+  worker-enabled: true
+  cloud-openapi-enabled: false
+  internal-token: ${LOCAL_LEADERBOARD_TOKEN:}
+  warmup-scopes:
+    - game: BJGYB2
+      platform: DYGYB2
+      faction: 红方
+      zhubo: ''
+  apps:
+    main: {enabled: false, game: ''}
+    g01: {enabled: false, game: 'BJGYB2'}
+    g02: {enabled: false, game: 'BJNC'}
+    g03: {enabled: false, game: 'BYJJ'}
+    g04: {enabled: false, game: 'GiveUpPro'}
+    g05: {enabled: false, game: '掘地求升'}
+    g06: {enabled: false, game: '跳上天庭官游'}
+    g07: {enabled: false, game: '跳上天庭1'}
+    g08: {enabled: false, game: '欢乐球球成品'}
+    g09: {enabled: false, game: '爬个杆杆'}
+    g10: {enabled: false, game: '马里奥求升1'}
+    g11: {enabled: false, game: '跃城超级玛丽测试版'}
+    g12: {enabled: false, game: '排行榜测试游戏'}
+    g13: {enabled: false, game: '临时测试'}

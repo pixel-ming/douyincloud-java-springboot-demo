@@ -1,15 +1,18 @@
-FROM public-cn-beijing.cr.volces.com/public/base:maven-3.6.0-jdk-8-slim as build
+FROM public-cn-beijing.cr.volces.com/public/maven:3-jdk-8-slim AS build
 
 # 指定构建过程中的工作目录
 WORKDIR /opt/application
-# 将当前目录（dockerfile所在目录）下所有文件都拷贝到工作目录下（.dockerignore中文件除外）
-COPY . .
+COPY pom.xml settings.xml ./
+COPY src ./src
 
 # 拉取公网依赖较慢，容易失败，建议在settings.xml中更换依赖源
-RUN mvn -s /opt/application/settings.xml -f /opt/application/pom.xml clean package
+RUN mvn -B -s /opt/application/settings.xml -f /opt/application/pom.xml clean package
 
-# 将构建产物jar包拷贝到运行时目录中
-RUN chmod -R 777 /opt/application/run.sh
+# 运行镜像仅携带正式 JAR 与启动脚本，不携带本机演练源码或历史数据。
+FROM public-cn-beijing.cr.volces.com/public/maven:3-jdk-8-slim
+WORKDIR /opt/application
+COPY --from=build /opt/application/target/douyincloud-demo-0.0.1-SNAPSHOT.jar ./target/douyincloud-demo-0.0.1-SNAPSHOT.jar
+COPY run.sh ./run.sh
 
 EXPOSE 8000
 

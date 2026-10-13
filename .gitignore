@@ -31,3 +31,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# 本地文档及审阅用 SQL 不随代码发布。
+*.md
+*.sql
+docs/

@@ -3,8 +3,49 @@ server:
 
 spring:
   redis:
-    url: redis://${REDIS_USERNAME:default}:${REDIS_PASSWORD:luobiao123}@${REDIS_ADDRESS:localhost:6379}
-    timeout: 1000
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    username: ${REDIS_USERNAME:}
+    password: ${REDIS_PASSWORD:}
+    timeout: 1s
+  datasource:
+    url: ${MYSQL_JDBC_URL:jdbc:mysql://localhost:3306/leaderboard?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC}
+    username: ${MYSQL_USERNAME:}
+    password: ${MYSQL_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${MYSQL_POOL_SIZE:10}
+      connection-timeout: 2000
+      initialization-fail-timeout: -1
+  sql:
+    init:
+      mode: never
+  jackson:
+    deserialization:
+      fail-on-trailing-tokens: true
+      use-big-decimal-for-floats: true
+      accept-float-as-int: false
 
-cloud:
-  env: ${CLOUD_ENV:local}
+leaderboard:
+  environment: ${CLOUD_ENV:local}
+  worker-enabled: ${LEADERBOARD_WORKER_ENABLED:false}
+  batch-size: 200
+  max-boards: ${LEADERBOARD_MAX_BOARDS:128}
+  max-members: ${LEADERBOARD_MAX_MEMBERS:500000}
+  snapshot-timeout-seconds: 120
+  cloud-openapi-enabled: ${DOUYIN_CLOUD_OPENAPI_ENABLED:false}
+  internal-token: ${LEADERBOARD_INTERNAL_TOKEN:}
+  # 补充实际常用分组；默认自动构建已迁移配置游戏及 ALL 的周期榜、日榜。
+  warmup-scopes: []
+  apps:
+    main:
+      enabled: ${DOUYIN_CALLBACK_ENABLED:false}
+      app-id: ${DOUYIN_APP_ID:}
+      game: ${RANK_GAME:}
+      platform: ${RANK_PLATFORM:}
+      faction: ${RANK_FACTION:}
+      zhubo: ${RANK_ZHUBO:}
+      mode: ${DOUYIN_CALLBACK_MODE:SIGNED}
+      secret: ${DOUYIN_CALLBACK_SECRET:}
+      source: ${DOUYIN_CALLBACK_SOURCE:}
+      private-ingress-confirmed: ${DOUYIN_PRIVATE_INGRESS_CONFIRMED:false}
+      timestamp-unit: ${DOUYIN_EVENT_TIMESTAMP_UNIT:MILLIS}

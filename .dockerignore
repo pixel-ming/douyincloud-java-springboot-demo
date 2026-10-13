@@ -1,2 +1,6 @@
-.idea/
-.mvn/
+**
+!pom.xml
+!settings.xml
+!run.sh
+!src/
+!src/**
