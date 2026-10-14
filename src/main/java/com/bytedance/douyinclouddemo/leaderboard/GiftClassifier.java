@@ -68,7 +68,7 @@ public class GiftClassifier {
         } else pending(gift,"INVALID_TIME");
         JsonNode test = node.get("test");
         if (test != null && !test.isBoolean()) pending(gift,"INVALID_TEST_FLAG");
-        if (node.hasNonNull("sec_magic_gift_id")) pending(gift,"SPECIAL_GIFT");
+        if (hasSpecialGift(node)) pending(gift,"SPECIAL_GIFT");
         if (gift.getGiftValue() != null) {
             try { gift.setScoreDelta(ScoreRules.score(gift.getGiftValue())); }
             catch (ArithmeticException e) { pending(gift,"SCORE_OVERFLOW"); }
@@ -79,6 +79,10 @@ public class GiftClassifier {
         gift.setReviewPayload(gift.getPendingPayload());
         if (!"PENDING_REVIEW".equals(gift.getStatus())) gift.setPendingPayload(null);
         return gift;
+    }
+    static boolean hasSpecialGift(JsonNode node) {
+        JsonNode value=node.get("sec_magic_gift_id");
+        return value!=null && !value.isNull() && !(value.isTextual() && value.textValue().isEmpty());
     }
     private Object normalizedValue(JsonNode node) {
         JsonNode value = node.get("gift_value");

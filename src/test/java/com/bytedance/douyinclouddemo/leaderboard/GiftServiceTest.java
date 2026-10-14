@@ -34,4 +34,27 @@ class GiftServiceTest {
         verify(store,never()).completeReview(anyLong(),any(),anyString(),anyString(),anyLong());
         verify(store,never()).book(anyLong(),any(),anyLong());
     }
+    @Test void emptyMagicGiftIdCanBeReviewedWithoutDuplicateScoring()throws Exception{
+        com.fasterxml.jackson.databind.node.ObjectNode message=(com.fasterxml.jackson.databind.node.ObjectNode)Fixtures.mapper().readTree(Fixtures.message("m1",Fixtures.NOW));
+        message.put("sec_magic_gift_id","");message.put("gift_value",10);message.put("gift_num",1);message.remove("test");
+        GiftData g=new GiftClassifier(Fixtures.mapper()).classify(Fixtures.app(),"room1",message,Fixtures.NOW);
+        LedgerStore.Receipt r=receipt(g);r.setStatus("PENDING_REVIEW");r.setPendingPayload(g.getReviewPayload());r.setFirstReceivedAt(g.getFirstReceivedAt());r.setAppId(g.getAppId());r.setRoomId(g.getRoomId());r.setMonth(g.getStorageMonth());
+        when(store.lockReceipt(7)).thenReturn(Optional.of(r));when(store.completeReview(eq(7L),any(),eq("operator"),eq("已核对"),anyLong())).thenReturn(true);
+        GiftService.Result result=service.approvePending(7,"operator","已核对",null);
+        assertEquals("BOOKED",result.getStatus());assertEquals(3L,result.getScoreDelta().longValue());
+        r.setStatus("BOOKED");r.setDelta(3L);
+        assertTrue(service.approvePending(7,"operator","已核对",null).isDuplicate());
+        verify(store).completeReview(eq(7L),any(),eq("operator"),eq("已核对"),anyLong());verify(store).book(eq(7L),any(),anyLong());
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"\"magic\"","123","false","{}","[]"})
+    void specialOrMalformedMagicGiftCannotBeApproved(String value)throws Exception{
+        com.fasterxml.jackson.databind.node.ObjectNode message=(com.fasterxml.jackson.databind.node.ObjectNode)Fixtures.mapper().readTree(Fixtures.message("m1",Fixtures.NOW));
+        message.set("sec_magic_gift_id",Fixtures.mapper().readTree(value));
+        GiftData g=new GiftClassifier(Fixtures.mapper()).classify(Fixtures.app(),"room1",message,Fixtures.NOW);
+        LedgerStore.Receipt r=receipt(g);r.setStatus("PENDING_REVIEW");r.setPendingPayload(g.getPendingPayload());r.setFirstReceivedAt(g.getFirstReceivedAt());r.setAppId(g.getAppId());r.setRoomId(g.getRoomId());r.setMonth(g.getStorageMonth());
+        when(store.lockReceipt(7)).thenReturn(Optional.of(r));
+        assertThrows(RankException.class,()->service.approvePending(7,"operator","已核对",null));
+        verify(store,never()).completeReview(anyLong(),any(),anyString(),anyString(),anyLong());verify(store,never()).book(anyLong(),any(),anyLong());
+    }
 }

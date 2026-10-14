@@ -88,7 +88,7 @@ public class GiftService {
                 // 超窗可以人工核对；缺失身份、负价值和特殊礼物不靠批准按钮猜测补齐。
                 if(gift.getUserId()==null || gift.getGiftId()==null || gift.getGiftNum()==null || gift.getGiftValue()==null || gift.getScoreDelta()==null || gift.getScoreDelta()<=0
                         || gift.getEventAt()==null || gift.getEventAt()<1451606400000L || gift.getEventAt()>clock.millis()+30000L
-                        || (message.has("test")&&(!message.get("test").isBoolean()||message.get("test").booleanValue())) || message.hasNonNull("sec_magic_gift_id")) throw RankException.badRequest("缺少可安全补记的礼物依据");
+                        || (message.has("test")&&(!message.get("test").isBoolean()||message.get("test").booleanValue())) || GiftClassifier.hasSpecialGift(message)) throw RankException.badRequest("缺少可安全补记的礼物依据");
                 gift.setStorageMonth(receipt.getMonth()); gift.setStatus("BOOKED");
                 migrations.guard(gift);
                 if(!"BOOKED".equals(gift.getStatus()))throw RankException.badRequest("切换前消息须核对旧基线，不允许直接补记");
