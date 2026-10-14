@@ -6,6 +6,8 @@ import java.time.format.DateTimeFormatter;
 public final class Periods {
     public static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
     public static final long BACKFILL_MILLIS = Duration.ofHours(48).toMillis();
+    public static final long REVIEW_MILLIS = Duration.ofDays(30).toMillis();
+    public static final long CACHE_GRACE_MILLIS = Duration.ofSeconds(30).toMillis();
     private Periods() { }
     public static long day(long millis) {
         return Instant.ofEpochMilli(millis).atZone(ZONE).toLocalDate().atStartOfDay(ZONE).toInstant().toEpochMilli();

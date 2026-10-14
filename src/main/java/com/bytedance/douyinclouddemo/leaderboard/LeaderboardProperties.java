@@ -13,7 +13,8 @@ import java.util.ArrayList;
 @ConfigurationProperties("leaderboard")
 public class LeaderboardProperties {
     private String environment = "local";
-    private boolean workerEnabled;
+    private boolean workerEnabled = true;
+    private boolean dataCleanupEnabled = true;
     private int batchSize = 200;
     private int maxBoards = 128;
     private int maxMembers = 500000;

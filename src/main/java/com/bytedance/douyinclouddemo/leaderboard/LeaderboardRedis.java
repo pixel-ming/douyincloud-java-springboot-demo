@@ -6,12 +6,18 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 @RequiredArgsConstructor
 public class LeaderboardRedis {
     private final StringRedisTemplate redis;
     private final LeaderboardProperties properties;
+    private String cleanupCursor="0";
+    private List<String> cleanupKeys=Collections.emptyList();
+    private int cleanupOffset;
+    private static final Pattern GENERATION_KEY=Pattern.compile("([a-f0-9]{64}):([0-7]):([0-9]{13}):([0-9]{13}):g([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(:meta)?");
     private static final String CHECK="if redis.call('HGET',KEYS[2],'status')~='COMPLETE' then return {'ERROR'} end "
             +"if redis.call('HGET',KEYS[2],'empty')~='1' and redis.call('EXISTS',KEYS[1])==0 then return {'ERROR'} end ";
     private static final DefaultRedisScript<Long> WRITE=new DefaultRedisScript<>(
@@ -21,10 +27,17 @@ public class LeaderboardRedis {
             +"if redis.call('ZCARD',KEYS[1])+needed>tonumber(ARGV[1]) then return -2 end "
             +"for i=3,#ARGV,2 do local old=redis.call('ZSCORE',KEYS[1],ARGV[i]); if not old or tonumber(ARGV[i+1])>tonumber(old) then redis.call('ZADD',KEYS[1],ARGV[i+1],ARGV[i]) end end "
             +"if redis.call('ZCARD',KEYS[1])>0 then redis.call('HSET',KEYS[2],'empty','0') end "
-            +"if status=='BUILDING' then redis.call('EXPIRE',KEYS[1],360); redis.call('EXPIRE',KEYS[2],360) end; return 1",Long.class);
+            +"if status=='BUILDING' then redis.call('EXPIRE',KEYS[1],360); redis.call('EXPIRE',KEYS[2],360) "
+            +"elseif redis.call('PTTL',KEYS[1])==-1 then local ttl=redis.call('PTTL',KEYS[2]); if ttl>=0 then redis.call('PEXPIRE',KEYS[1],ttl) end end; return 1",Long.class);
     private static final DefaultRedisScript<Long> COMPLETE=new DefaultRedisScript<>(
             "if redis.call('HGET',KEYS[2],'status')~='BUILDING' then return 0 end "
-            +"redis.call('HSET',KEYS[2],'status','COMPLETE','empty',redis.call('ZCARD',KEYS[1])==0 and '1' or '0'); return 1",Long.class);
+            +"redis.call('HSET',KEYS[2],'status','COMPLETE','empty',redis.call('ZCARD',KEYS[1])==0 and '1' or '0'); "
+            +"redis.call('PEXPIREAT',KEYS[1],ARGV[1]); redis.call('PEXPIREAT',KEYS[2],ARGV[1]); return 1",Long.class);
+    private static final DefaultRedisScript<Long> REPAIR_TTL=new DefaultRedisScript<>(
+            "for i=1,#KEYS do local ttl=redis.call('PTTL',KEYS[i]); if ttl==-1 or (ttl>=0 and tonumber(ARGV[1])<=tonumber(ARGV[2])) then redis.call('PEXPIREAT',KEYS[i],ARGV[1]) end end; return 1",Long.class);
+    @SuppressWarnings("rawtypes")
+    private static final DefaultRedisScript<List> SCAN_PAGE=new DefaultRedisScript<>(
+            "return redis.call('SCAN',ARGV[1],'MATCH',ARGV[2],'COUNT',ARGV[3])",List.class);
     @SuppressWarnings("rawtypes")
     private static final DefaultRedisScript<List> TOP=new DefaultRedisScript<>(CHECK+"local result={'OK'}; local rows=redis.call('ZREVRANGE',KEYS[1],0,tonumber(ARGV[1])-1,'WITHSCORES'); for i=1,#rows do result[#result+1]=rows[i] end; return result",List.class);
     @SuppressWarnings("rawtypes")
@@ -60,10 +73,9 @@ public class LeaderboardRedis {
         if(result==null || result!=1)throw RankException.unavailable();
     }
     public void complete(CacheBoard board,String generation) {
-        Long result=redis.execute(COMPLETE,keys(board,generation));
+        Long result=redis.execute(COMPLETE,keys(board,generation),Long.toString(Math.addExact(board.getPeriodEnd(),Periods.CACHE_GRACE_MILLIS)));
         if(result==null||result!=1)throw RankException.unavailable();
     }
-    public void keep(CacheBoard board,String generation) {for(String key:keys(board,generation))redis.persist(key);}
     public boolean readable(CacheBoard board) {
         List<?> result=redis.execute(READABLE,keys(board,board.getActiveGeneration()));
         return result!=null&&!result.isEmpty()&&"OK".equals(result.get(0));
@@ -104,4 +116,39 @@ public class LeaderboardRedis {
         String key=key(board,generation);redis.opsForHash().put(key+":meta","status","RETIRED");
         redis.expire(key,30,TimeUnit.SECONDS);redis.expire(key+":meta",30,TimeUnit.SECONDS);
     }
+    public void repairExpirations(long now,int limit,List<CacheBoard> referenced) {
+        Set<String> live=new HashSet<>();
+        for(CacheBoard board:referenced) {
+            if(board.getActiveGeneration()!=null)live.add(key(board,board.getActiveGeneration()));
+            if(board.getBuildingGeneration()!=null)live.add(key(board,board.getBuildingGeneration()));
+        }
+        String prefix="lb:v2:"+properties.getEnvironment()+":";
+        try {
+            if(cleanupOffset>=cleanupKeys.size()) {
+                List<?> page=redis.execute(SCAN_PAGE,Collections.emptyList(),cleanupCursor,prefix+"*:g*",Integer.toString(limit));
+                if(page==null||page.size()!=2||!(page.get(1) instanceof List))throw RankException.unavailable();
+                String next=page.get(0).toString();if(!next.matches("[0-9]+"))throw RankException.unavailable();
+                cleanupCursor=next;cleanupKeys=new ArrayList<>();cleanupOffset=0;
+                for(Object key:(List<?>)page.get(1))cleanupKeys.add(key.toString());
+            }
+            for(int checked=0;checked<limit&&cleanupOffset<cleanupKeys.size();checked++) {
+                String found=cleanupKeys.get(cleanupOffset++);long end=keyExpiry(found);
+                if(end==0)continue;
+                String base=found.endsWith(":meta")?found.substring(0,found.length()-5):found;
+                if(end<=now&&live.contains(base))continue;
+                List<String> pair=Arrays.asList(base,base+":meta");
+                if(!Long.valueOf(1).equals(redis.execute(REPAIR_TTL,pair,Long.toString(end),Long.toString(now))))throw RankException.unavailable();
+            }
+        } catch(RuntimeException e) {resetCleanup();throw e;}
+    }
+    long keyExpiry(String key) {
+        String prefix="lb:v2:"+properties.getEnvironment()+":";
+        if(!key.startsWith(prefix))return 0;
+        Matcher match=GENERATION_KEY.matcher(key.substring(prefix.length()));if(!match.matches())return 0;
+        long day=Long.parseLong(match.group(3)),cycle=Long.parseLong(match.group(4));
+        // 边界日的同一日榜可能对应02:00前、后的两个周期。
+        if(Periods.day(day)!=day||Periods.cycle(cycle)!=cycle||(Periods.cycle(day)!=cycle&&Periods.cycle(day+7200000)!=cycle))return 0;
+        return Math.addExact(Math.min(Periods.end(0,day),Periods.end(1,cycle)),Periods.CACHE_GRACE_MILLIS);
+    }
+    public void resetCleanup(){cleanupCursor="0";cleanupKeys=Collections.emptyList();cleanupOffset=0;}
 }

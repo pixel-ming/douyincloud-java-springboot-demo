@@ -23,6 +23,7 @@ public class CacheWorker {
     private final PlatformTransactionManager transactions;
     private final LeaderboardProperties properties;
     private final CacheWarmup warmup;
+    private final RetentionStore retention;
     private final String owner=UUID.randomUUID().toString();
     private final ExecutorService builder=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"leaderboard-rebuild");t.setDaemon(true);return t;});
     private final AtomicBoolean building=new AtomicBoolean();
@@ -36,7 +37,7 @@ public class CacheWorker {
     public void tick() {
         if(!properties.isWorkerEnabled() || System.currentTimeMillis()<errorAfter)return;
         try {
-            CacheStateStore.Lease lease=states.acquire(owner);if(lease==null)return;
+            CacheStateStore.Lease lease=states.acquire(owner);if(lease==null){redis.resetCleanup();return;}
             if(!redis.healthy(lease)) {
                 // 先持久化失效，再推进健康标记；中途退出不能把旧快照标记成最新。
                 List<CacheBoard> previous=states.invalidateAll(lease);
@@ -54,9 +55,25 @@ public class CacheWorker {
                 lease=states.acquire(owner);if(lease==null)return;
             }
             if(System.currentTimeMillis()>=cleanupAfter) {
-                for(CacheBoard old:states.expire(lease)){redis.drop(old,old.getActiveGeneration());redis.drop(old,old.getBuildingGeneration());}
                 cleanupAfter=System.currentTimeMillis()+60000;
+                try {
+                    for(CacheBoard old:states.expire(lease)) {
+                        try {
+                            redis.drop(old,old.getActiveGeneration());redis.drop(old,old.getBuildingGeneration());
+                            states.confirmExpiredRemoval(old,lease);
+                        } catch(RuntimeException e) {log.warn("排行榜旧缓存回收延期：scopeId={}, exception={}",old.getScope().id(),e.getClass().getSimpleName());}
+                    }
+                    redis.repairExpirations(states.cleanupTime(lease),properties.getBatchSize(),states.enabled());
+                    states.purgeExpired(lease);
+                } catch(RuntimeException e) {log.warn("排行榜缓存清理延期：exception={}",e.getClass().getSimpleName());}
                 lease=states.acquire(owner);if(lease==null)return;
+                if(properties.isDataCleanupEnabled()) {
+                    try {
+                        int removed=states.cleanBusinessData(lease,retention);
+                        if(removed>0)log.info("排行榜历史数据清理完成：count={}",removed);
+                    } catch(RuntimeException e) {log.warn("排行榜历史数据清理延期：exception={}",e.getClass().getSimpleName());}
+                    lease=states.acquire(owner);if(lease==null)return;
+                }
             }
             if(warmup.register()) {
                 // 自动登记会推进 registry，同步及构建必须重新取得协调证据。
@@ -121,7 +138,6 @@ public class CacheWorker {
             redis.complete(board,generation);
             published=states.publish(board,generation,lease,first+";"+handoff);
             if(!published)throw RankException.unavailable();
-            redis.keep(board,generation);
             redis.retire(board,board.getActiveGeneration());
             log.info("排行榜缓存构建成功：scopeId={}, rankType={}, periodStart={}",board.getScope().id(),board.getRankType(),board.getPeriodStart());
         } catch(RuntimeException e) {

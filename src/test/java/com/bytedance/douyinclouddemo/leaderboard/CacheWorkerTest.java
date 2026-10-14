@@ -2,6 +2,10 @@ package com.bytedance.douyinclouddemo.leaderboard;
 
 import org.junit.jupiter.api.*;
 import org.mockito.ArgumentCaptor;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.mock.env.MockEnvironment;
 import org.springframework.transaction.*;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -15,7 +19,8 @@ class CacheWorkerTest {
     private final PlatformTransactionManager tx=Fixtures.transactions();
     private final LeaderboardProperties props=new LeaderboardProperties();
     private final CacheWarmup warmup=mock(CacheWarmup.class);
-    private final CacheWorker worker=new CacheWorker(states,ledger,ranks,redis,tx,props,warmup);
+    private final RetentionStore retention=mock(RetentionStore.class);
+    private final CacheWorker worker=new CacheWorker(states,ledger,ranks,redis,tx,props,warmup,retention);
     private final CacheStateStore.Lease lease=new CacheStateStore.Lease("owner",1,3,0,Fixtures.NOW+30000);
     @BeforeEach void membership(){when(ranks.affectedUsers(any(),anyList())).thenReturn(Collections.singleton("u1"));}
     @AfterEach void stop(){worker.stop();}
@@ -29,7 +34,45 @@ class CacheWorkerTest {
     @Test void incompleteSnapshotCannotBeDeclaredSuccessful(){CacheBoard b=Fixtures.board(0);when(ranks.pageScores(any(),anyString(),anyInt())).thenReturn(Collections.singletonMap("u1",10D));doThrow(RankException.unavailable()).when(redis).write(any(),anyString(),anyMap());assertThrows(RankException.class,()->worker.snapshot(b,"building"));verify(tx).rollback(any());verify(redis,never()).complete(any(),anyString());}
     @Test void caseVariantPendingCounterUsesDatabaseMembership(){CacheBoard b=Fixtures.board(0);LedgerStore.Counter counter=Fixtures.counter();counter.setGame("bjgyb2");when(ranks.scores(any(),anyCollection())).thenReturn(Collections.singletonMap("u1",30D));when(states.acknowledge(any(),anyList(),anyLong())).thenReturn(true);worker.synchronize(lease,Collections.singletonList(counter),Collections.singletonList(b));verify(ranks).affectedUsers(b,Collections.singletonList(counter));verify(redis).write(b,"active",Collections.singletonMap("u1",30D));}
     @Test void onlyLeaseOwnerRegistersWarmBoardsAndReacquiresBeforePending(){props.setWorkerEnabled(true);when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);when(warmup.register()).thenReturn(true);worker.tick();org.mockito.InOrder order=inOrder(warmup,states,ledger);order.verify(warmup).register();order.verify(states).acquire(anyString());order.verify(ledger).pending(0,props.getBatchSize());}
-    @Test void workerWithoutLeaseOrDisabledNeverRegistersBoards(){worker.tick();props.setWorkerEnabled(true);worker.tick();verifyNoInteractions(warmup);}
+    @Test void workerWithoutLeaseOrDisabledNeverRegistersBoards(){props.setWorkerEnabled(false);worker.tick();verifyNoInteractions(states);props.setWorkerEnabled(true);worker.tick();verifyNoInteractions(warmup);}
+    @Test void defaultsStartWorkerAndCleanupWithoutEnvironmentVariables()throws Exception{
+        MockEnvironment environment=new MockEnvironment();
+        new YamlPropertySourceLoader().load("defaults",new ClassPathResource("application.yml")).forEach(source->environment.getPropertySources().addLast(source));
+        LeaderboardProperties configured=Binder.get(environment).bind("leaderboard",LeaderboardProperties.class).get();
+        assertTrue(props.isWorkerEnabled());assertTrue(props.isDataCleanupEnabled());
+        assertTrue(configured.isWorkerEnabled());assertTrue(configured.isDataCleanupEnabled());
+        when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);
+        worker.tick();verify(states).cleanBusinessData(lease,retention);verify(ledger).pending(0,props.getBatchSize());
+    }
+    @Test void disablingBusinessCleanupKeepsCacheCleanupAndScoreSynchronization(){
+        props.setDataCleanupEnabled(false);
+        when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);
+        worker.tick();verify(states).expire(lease);verify(states).purgeExpired(lease);
+        verify(states,never()).cleanBusinessData(any(),any());verify(ledger).pending(0,props.getBatchSize());
+    }
+    @Test void failedCacheRemovalKeepsRetryEvidenceAndDoesNotBlockScoreSynchronization(){
+        props.setWorkerEnabled(true);CacheBoard expired=Fixtures.board(0);
+        when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);
+        when(states.expire(lease)).thenReturn(Collections.singletonList(expired));
+        doThrow(RankException.unavailable()).when(redis).drop(expired,expired.getActiveGeneration());
+        worker.tick();
+        verify(states,never()).confirmExpiredRemoval(any(),any());
+        verify(ledger).pending(0,props.getBatchSize());verifyNoInteractions(retention);
+    }
+    @Test void successfulRemovalIsConfirmedBeforeOldStateCanBeDeleted(){
+        props.setWorkerEnabled(true);CacheBoard expired=Fixtures.board(0);expired.setBuildingGeneration("building");
+        when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);
+        when(states.expire(lease)).thenReturn(Collections.singletonList(expired));worker.tick();
+        org.mockito.InOrder order=inOrder(redis,states);
+        order.verify(redis).drop(expired,"active");order.verify(redis).drop(expired,"building");
+        order.verify(states).confirmExpiredRemoval(expired,lease);order.verify(states).purgeExpired(lease);
+    }
+    @Test void failedBusinessCleanupDoesNotStopIngestionSynchronization(){
+        props.setWorkerEnabled(true);
+        when(states.acquire(anyString())).thenReturn(lease);when(redis.healthy(lease)).thenReturn(true);
+        when(states.cleanBusinessData(lease,retention)).thenThrow(RankException.unavailable());worker.tick();
+        verifyNoInteractions(retention);verify(ledger).pending(0,props.getBatchSize());
+    }
     @Test void warmRegistrationUsesRefreshedRegistryForPendingAcknowledgement(){
         props.setWorkerEnabled(true);CacheStateStore.Lease refreshed=new CacheStateStore.Lease("owner",1,4,0,Fixtures.NOW+30000);
         when(states.acquire(anyString())).thenReturn(lease,lease,lease,refreshed);when(redis.healthy(any())).thenReturn(true);when(redis.readable(any())).thenReturn(true);when(warmup.register()).thenReturn(true);

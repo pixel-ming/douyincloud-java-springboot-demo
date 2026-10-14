@@ -57,4 +57,17 @@ class GiftServiceTest {
         assertThrows(RankException.class,()->service.approvePending(7,"operator","已核对",null));
         verify(store,never()).completeReview(anyLong(),any(),anyString(),anyString(),anyLong());verify(store,never()).book(anyLong(),any(),anyLong());
     }
+    @Test void reviewWindowBoundaryAllowsThirtyDaysAndRejectsOneMillisecondLater()throws Exception{
+        GiftData g=Fixtures.gift();LedgerStore.Receipt r=receipt(g);r.setStatus("PENDING_REVIEW");r.setPendingPayload(g.getReviewPayload());r.setFirstReceivedAt(Fixtures.NOW);r.setAppId(g.getAppId());r.setRoomId(g.getRoomId());r.setMonth(g.getStorageMonth());
+        when(store.lockReceipt(7)).thenReturn(Optional.of(r));when(store.completeReview(eq(7L),any(),anyString(),anyString(),anyLong())).thenReturn(true);
+        clock.millis=Fixtures.NOW+Periods.REVIEW_MILLIS;
+        assertEquals("BOOKED",service.approvePending(7,"operator","已核对",null).getStatus());
+        clock.millis++;assertThrows(RankException.class,()->service.approvePending(7,"operator","已核对",clock.millis));
+        verify(store,times(1)).book(eq(7L),any(),anyLong());
+    }
+    @Test void freshReceiptCannotBeCorrectedIntoAnEventOlderThanThirtyDays()throws Exception{
+        GiftData g=Fixtures.gift();LedgerStore.Receipt r=receipt(g);r.setStatus("PENDING_REVIEW");r.setPendingPayload(g.getReviewPayload());r.setFirstReceivedAt(Fixtures.NOW);r.setAppId(g.getAppId());r.setRoomId(g.getRoomId());r.setMonth(g.getStorageMonth());when(store.lockReceipt(7)).thenReturn(Optional.of(r));
+        assertThrows(RankException.class,()->service.approvePending(7,"operator","已核对",Fixtures.NOW-Periods.REVIEW_MILLIS-1));
+        verify(store,never()).book(anyLong(),any(),anyLong());
+    }
 }

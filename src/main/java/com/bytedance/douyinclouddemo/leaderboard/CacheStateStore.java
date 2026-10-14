@@ -49,7 +49,7 @@ public class CacheStateStore {
                 until=now+30000;jdbc.update("UPDATE cache_sync_control SET owner_id=?,fence_token=?,lease_until=? WHERE environment=?",owner,token,until,properties.getEnvironment());
             }
             if(takeover) {
-                int abandoned=jdbc.update("UPDATE rank_cache_state SET status='REQUESTED',building_generation=NULL,build_token=NULL,retry_after=0 WHERE building_generation IS NOT NULL");
+                int abandoned=jdbc.update("UPDATE rank_cache_state SET status='REQUESTED',building_generation=NULL,build_token=NULL,retry_after=0 WHERE building_generation IS NOT NULL AND status<>'EXPIRED'");
                 if(abandoned>0) {
                     jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());
                     return new Lease(owner,token,old.getRegistry()+1,old.getSequence(),until);
@@ -79,7 +79,7 @@ public class CacheStateStore {
     }
     public List<CacheBoard> enabled() { return jdbc.query("SELECT * FROM rank_cache_state WHERE status<>'EXPIRED'",this::board); }
     public Optional<CacheBoard> candidate() {
-        List<CacheBoard> rows=jdbc.query("SELECT * FROM rank_cache_state WHERE status='REQUESTED' AND retry_after<=CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))*1000 AS SIGNED) ORDER BY (rank_type IN (0,1)) DESC,period_start DESC,rank_type LIMIT 1",this::board);
+        List<CacheBoard> rows=jdbc.query("SELECT * FROM rank_cache_state WHERE status='REQUESTED' AND period_end>CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))*1000 AS SIGNED) AND retry_after<=CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))*1000 AS SIGNED) ORDER BY (rank_type IN (0,1)) DESC,period_start DESC,rank_type LIMIT 1",this::board);
         return rows.isEmpty()?Optional.empty():Optional.of(rows.get(0));
     }
     public boolean begin(CacheBoard board,String generation,Lease lease) {
@@ -92,7 +92,7 @@ public class CacheStateStore {
     public boolean publish(CacheBoard board,String generation,Lease lease,String evidence) {
         Boolean result=new TransactionTemplate(transactions).execute(tx->{
             Lease current=lockControl();if(!valid(current,lease))return false;
-            int rows=jdbc.update("UPDATE rank_cache_state SET active_generation=?,building_generation=NULL,build_token=NULL,status='READY',snapshot_evidence=? WHERE scope_id=? AND rank_type=? AND period_start=? AND building_generation=? AND build_token=?",generation,evidence,board.getScope().id(),board.getRankType(),board.getPeriodStart(),generation,lease.getToken());
+            int rows=jdbc.update("UPDATE rank_cache_state SET active_generation=?,building_generation=NULL,build_token=NULL,status='READY',snapshot_evidence=? WHERE scope_id=? AND rank_type=? AND day_start=? AND cycle_start=? AND status='BUILDING' AND period_end>? AND building_generation=? AND build_token=?",generation,evidence,board.getScope().id(),board.getRankType(),board.getDayStart(),board.getCycleStart(),now(),generation,lease.getToken());
             if(rows==1)jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());return rows==1;
         });return Boolean.TRUE.equals(result);
     }
@@ -140,13 +140,48 @@ public class CacheStateStore {
     public List<CacheBoard> expire(Lease lease) {
         List<CacheBoard> result=new TransactionTemplate(transactions).execute(tx->{
             Lease current=lockControl();if(!valid(current,lease))return Collections.<CacheBoard>emptyList();
-            long cutoff=now()-30000;
-            List<CacheBoard> old=jdbc.query("SELECT * FROM rank_cache_state WHERE period_end<? AND status<>'EXPIRED'",this::board,cutoff);
+            long cutoff=now()-Periods.CACHE_GRACE_MILLIS;
+            List<CacheBoard> old=jdbc.query("SELECT * FROM rank_cache_state WHERE period_end<? AND (status<>'EXPIRED' OR active_generation IS NOT NULL OR building_generation IS NOT NULL) ORDER BY period_end LIMIT ?",this::board,cutoff,properties.getBatchSize());
             if(!old.isEmpty()) {
-                jdbc.update("UPDATE rank_cache_state SET status='EXPIRED',active_generation=NULL,building_generation=NULL,build_token=NULL WHERE period_end<? AND status<>'EXPIRED'",cutoff);
+                List<Object[]> identities=new ArrayList<>();
+                for(CacheBoard board:old)identities.add(new Object[]{board.getScope().id(),board.getRankType(),board.getDayStart(),board.getCycleStart()});
+                // 保留 generation 供删除失败或进程重启后重试，撤销构建 token 防止旧任务发布。
+                jdbc.batchUpdate("UPDATE rank_cache_state SET status='EXPIRED',build_token=NULL WHERE scope_id=? AND rank_type=? AND day_start=? AND cycle_start=?",identities);
                 jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());
             }return old;
         });return result==null?Collections.emptyList():result;
+    }
+    public void confirmExpiredRemoval(CacheBoard board,Lease lease) {
+        new TransactionTemplate(transactions).execute(tx->{
+            Lease current=lockControl();if(!valid(current,lease))return null;
+            int changed=jdbc.update("UPDATE rank_cache_state SET active_generation=NULL,building_generation=NULL WHERE scope_id=? AND rank_type=? AND day_start=? AND cycle_start=? AND status='EXPIRED' AND active_generation<=>? AND building_generation<=>?",
+                    board.getScope().id(),board.getRankType(),board.getDayStart(),board.getCycleStart(),board.getActiveGeneration(),board.getBuildingGeneration());
+            if(changed>0)jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());return null;
+        });
+    }
+    public long cleanupTime(Lease lease) {
+        return new TransactionTemplate(transactions).execute(tx->{Lease current=lockControl();if(!valid(current,lease))throw RankException.unavailable();return now();});
+    }
+    public void purgeExpired(Lease lease) {
+        new TransactionTemplate(transactions).execute(tx->{
+            Lease current=lockControl();if(!valid(current,lease))return null;
+            int changed=jdbc.update("DELETE FROM rank_cache_state WHERE status='EXPIRED' AND active_generation IS NULL AND building_generation IS NULL AND period_end<? ORDER BY period_end LIMIT ?",now()-java.time.Duration.ofDays(7).toMillis(),properties.getBatchSize());
+            if(changed>0)jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());return null;
+        });
+    }
+    public int cleanBusinessData(Lease lease,RetentionStore retention) {
+        if(!properties.isDataCleanupEnabled())return 0;
+        TransactionTemplate tx=new TransactionTemplate(transactions);tx.setTimeout(2);
+        RetentionStore.Progress previous=retention.snapshotProgress();
+        try {
+            Integer removed=tx.execute(status->{
+                Lease current=lockControl();if(!valid(current,lease))return 0;
+                return retention.cleanup(now(),properties.getBatchSize());
+            });return removed==null?0:removed;
+        } catch(RuntimeException | Error e) {
+            // 提交失败也须回到本批起点，保留此前已提交批次的进度。
+            retention.restoreProgress(previous);throw e;
+        }
     }
     private boolean valid(Lease current,Lease expected) {
         return current.getOwner().equals(expected.getOwner()) && current.getToken()==expected.getToken() && current.getUntil()>now();

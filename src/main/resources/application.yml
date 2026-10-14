@@ -27,7 +27,9 @@ spring:
 
 leaderboard:
   environment: ${CLOUD_ENV:local}
-  worker-enabled: ${LEADERBOARD_WORKER_ENABLED:false}
+  worker-enabled: true
+  # 自动清理超过90天且满足保护条件的业务记录；设为 false 可关闭。
+  data-cleanup-enabled: true
   batch-size: 200
   max-boards: ${LEADERBOARD_MAX_BOARDS:128}
   max-members: ${LEADERBOARD_MAX_MEMBERS:500000}

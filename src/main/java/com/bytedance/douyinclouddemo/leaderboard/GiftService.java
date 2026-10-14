@@ -76,6 +76,8 @@ public class GiftService {
         return new TransactionTemplate(transactions).execute(status->{
             LedgerStore.Receipt receipt=store.lockReceipt(id).orElseThrow(()->RankException.badRequest("待核对消息不存在"));
             if(!"PENDING_REVIEW".equals(receipt.getStatus())) return new Result(id,receipt.getStatus(),true,receipt.getDelta());
+            long now=clock.millis();
+            if(now-receipt.getFirstReceivedAt()>Periods.REVIEW_MILLIS)throw RankException.badRequest("消息已超过30天人工补记窗口，须独立核对历史记录");
             try {
                 JsonNode payload=mapper.readTree(receipt.getPendingPayload());
                 LeaderboardProperties.App app=new LeaderboardProperties.App();
@@ -88,6 +90,7 @@ public class GiftService {
                 // 超窗可以人工核对；缺失身份、负价值和特殊礼物不靠批准按钮猜测补齐。
                 if(gift.getUserId()==null || gift.getGiftId()==null || gift.getGiftNum()==null || gift.getGiftValue()==null || gift.getScoreDelta()==null || gift.getScoreDelta()<=0
                         || gift.getEventAt()==null || gift.getEventAt()<1451606400000L || gift.getEventAt()>clock.millis()+30000L
+                        || now-gift.getEventAt()>Periods.REVIEW_MILLIS
                         || (message.has("test")&&(!message.get("test").isBoolean()||message.get("test").booleanValue())) || GiftClassifier.hasSpecialGift(message)) throw RankException.badRequest("缺少可安全补记的礼物依据");
                 gift.setStorageMonth(receipt.getMonth()); gift.setStatus("BOOKED");
                 migrations.guard(gift);
