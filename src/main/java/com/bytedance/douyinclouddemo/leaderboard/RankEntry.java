@@ -1,6 +1,7 @@
 package com.bytedance.douyinclouddemo.leaderboard;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import lombok.Data;
 
 @Data
@@ -10,7 +11,7 @@ public class RankEntry {
     @JsonProperty("Platform") String platform;
     @JsonProperty("Faction") String faction;
     @JsonProperty("Zhubo") String zhubo;
-    @JsonProperty("Nickname") String nickname;
+    @JsonProperty("Nickname") @JsonSerialize(using=Utf8NicknameSerializer.class) String nickname;
     @JsonProperty("Avatar") String avatar;
     @JsonProperty("KillSum") Long killSum;
     @JsonProperty("Points1Sum") Double points1Sum;
