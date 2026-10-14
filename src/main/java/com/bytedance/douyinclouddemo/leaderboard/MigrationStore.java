@@ -121,8 +121,7 @@ public class MigrationStore {
         if(p.getGames()==null||p.getGames().isEmpty()||!configuredGames().containsAll(p.getGames()))throw RankException.badRequest("游戏清单须来自已配置可信应用");
         if(p.isIncludesAllGames()&&!configuredGames().equals(p.getGames()))throw RankException.badRequest("ALL快照必须覆盖全部配置游戏");
         if(p.getCutoverAt()==null||p.getCutoverAt()<1451606400000L||p.getDayStart()==null||p.getCycleStart()==null)throw RankException.badRequest("缺少可靠切换及快照周期");
-        if(Periods.day(p.getCutoverAt())!=p.getDayStart()||Periods.cycle(p.getCycleStart())!=p.getCycleStart()||p.getCycleStart()>p.getCutoverAt()||Periods.end(1,p.getCycleStart())<p.getCutoverAt())throw RankException.badRequest("快照日或周期不覆盖切换点");
-        if("SCOPED".equals(p.getMode())&&Periods.cycle(p.getCutoverAt())!=p.getCutoverAt())throw RankException.badRequest("历史迁移须在已确认的周期边界切换");
+        if(Periods.day(p.getCutoverAt())!=p.getDayStart()||Periods.cycle(p.getCutoverAt())!=p.getCycleStart())throw RankException.badRequest("快照日或周期不覆盖切换点");
     }
     RankEntry validateRow(JsonNode node,MigrationPlan plan) {
         String[] text={"UserId","Game","Platform","Faction","Zhubo","Nickname","Avatar","CreatedAt","UpdatedAt"};

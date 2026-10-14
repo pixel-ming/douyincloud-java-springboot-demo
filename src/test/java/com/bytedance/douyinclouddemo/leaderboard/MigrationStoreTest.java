@@ -2,8 +2,11 @@ package com.bytedance.douyinclouddemo.leaderboard;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import java.time.Instant;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -11,8 +14,40 @@ import static org.mockito.Mockito.*;
 class MigrationStoreTest {
     private final JdbcTemplate jdbc=mock(JdbcTemplate.class);
     private final LegacyScopeStore scopes=mock(LegacyScopeStore.class);
-    private final MigrationStore store=new MigrationStore(jdbc,Fixtures.transactions(),Fixtures.mapper(),new LeaderboardProperties(),new Fixtures.MutableClock(),scopes);
+    private final LeaderboardProperties properties=new LeaderboardProperties();
+    private final MigrationStore store=new MigrationStore(jdbc,Fixtures.transactions(),Fixtures.mapper(),properties,new Fixtures.MutableClock(),scopes);
     private final MigrationPlan plan=new MigrationPlan();
+    private MigrationPlan historyPlan(String cutover) {
+        properties.getApps().put("main",Fixtures.app());
+        MigrationPlan history=new MigrationPlan();history.setBatchId("history");history.setSourceId("snapshot");
+        history.setEvidence("旧服务已停止写入，快照日期及周期已核对");history.setMode("SCOPED");history.setLegacyFrozen(true);
+        history.setGames(Collections.singleton("BJGYB2"));history.setIncludesAllGames(true);
+        history.setExpectedRows(1L);history.setExpectedDigest(ScoreRules.sha256("snapshot"));
+        long time=Instant.parse(cutover).toEpochMilli();history.setCutoverAt(time);
+        history.setDayStart(Periods.day(time));history.setCycleStart(Periods.cycle(time));return history;
+    }
+    @ParameterizedTest
+    @ValueSource(strings={"2026-10-14T13:55:51Z","2026-10-19T17:59:59.999Z","2026-10-19T18:00:00Z","2026-10-19T18:00:00.001Z"})
+    void acceptsFrozenHistoryInsideCycleAndAtBoundary(String cutover){
+        assertDoesNotThrow(()->store.validatePlan(historyPlan(cutover)));
+        verifyNoInteractions(jdbc,scopes);
+    }
+    @Test void rejectsSnapshotWithWrongDayOrCycle(){
+        MigrationPlan history=historyPlan("2026-10-14T13:55:51Z");
+        history.setDayStart(Periods.day(history.getCutoverAt()-86400000L));
+        assertThrows(RankException.class,()->store.validatePlan(history));
+        history.setDayStart(Periods.day(history.getCutoverAt()));history.setCycleStart(history.getCycleStart()+1);
+        assertThrows(RankException.class,()->store.validatePlan(history));
+    }
+    @Test void rejectsPreviousCycleAtExactResetBoundary(){
+        MigrationPlan history=historyPlan("2026-10-19T18:00:00Z");
+        history.setCycleStart(Periods.cycle(history.getCutoverAt()-1));
+        assertThrows(RankException.class,()->store.validatePlan(history));
+    }
+    @Test void stillRejectsHistoryWithoutFreezeConfirmation(){
+        MigrationPlan history=historyPlan("2026-10-14T13:55:51Z");history.setLegacyFrozen(false);
+        assertThrows(RankException.class,()->store.validatePlan(history));
+    }
     private JsonNode row() {
         plan.setGames(Collections.singleton("BJGYB2"));
         RankEntry entry=new RankEntry();entry.setUserId("u1");entry.setGame("BJGYB2");entry.setPlatform("DYGYB2");entry.setFaction("红方");entry.setZhubo("");
