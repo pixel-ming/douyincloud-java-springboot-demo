@@ -12,6 +12,8 @@ import java.util.Map;
 @Component
 @RequiredArgsConstructor
 public class GiftClassifier {
+    static final String LUCKY_CUBE_ID="9tPFzcpEQFovisU3j3coz5tqj/qQ5LHJQJWob/X5bLbxm1s7kYLj0aGSb4k=";
+    static final String LUCKY_CUBE_RULE="lucky-cube-1diamond-v1";
     private final ObjectMapper mapper;
 
     public GiftData classify(LeaderboardProperties.App app, String room, JsonNode node, long receivedAt) {
@@ -68,9 +70,12 @@ public class GiftClassifier {
         } else pending(gift,"INVALID_TIME");
         JsonNode test = node.get("test");
         if (test != null && !test.isBoolean()) pending(gift,"INVALID_TEST_FLAG");
-        if (hasSpecialGift(node)) pending(gift,"SPECIAL_GIFT");
+        boolean luckyCube=LUCKY_CUBE_ID.equals(text(node,"sec_magic_gift_id"));
+        if (hasSpecialGift(node) && !luckyCube) pending(gift,"SPECIAL_GIFT");
         if (gift.getGiftValue() != null) {
-            try { gift.setScoreDelta(ScoreRules.score(gift.getGiftValue())); }
+            // 幸运魔方每条来源消息按 1 钻流水计分，随机效果价值和数量保留但不参与换算。
+            if(luckyCube)gift.setRuleVersion(LUCKY_CUBE_RULE);
+            try { gift.setScoreDelta(ScoreRules.score(luckyCube?BigDecimal.TEN:gift.getGiftValue())); }
             catch (ArithmeticException e) { pending(gift,"SCORE_OVERFLOW"); }
         }
         if (test != null && test.isBoolean() && test.booleanValue()) filtered(gift,"TEST_MESSAGE");

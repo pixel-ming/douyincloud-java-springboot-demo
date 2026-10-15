@@ -33,7 +33,7 @@ public class LedgerStore {
         GeneratedKeyHolder holder=new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement ps=connection.prepareStatement("INSERT INTO gift_receipt(source_app_id,room_id,msg_type,msg_id,game,user_id,content_fingerprint,event_at,first_received_at,storage_month,score_delta,rule_version,status,reason_code,completed_at,pending_payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS);
-            Object[] values={gift.getAppId(),gift.getRoomId(),gift.getMsgType(),gift.getMsgId(),gift.getGame(),gift.getUserId(),gift.getFingerprint(),gift.getEventAt(),gift.getFirstReceivedAt(),gift.getStorageMonth(),gift.getScoreDelta(),ScoreRules.VERSION,gift.getStatus(),gift.getReason(),"PENDING_REVIEW".equals(gift.getStatus())?null:gift.getFirstReceivedAt(),gift.getPendingPayload()};
+            Object[] values={gift.getAppId(),gift.getRoomId(),gift.getMsgType(),gift.getMsgId(),gift.getGame(),gift.getUserId(),gift.getFingerprint(),gift.getEventAt(),gift.getFirstReceivedAt(),gift.getStorageMonth(),gift.getScoreDelta(),gift.getRuleVersion(),gift.getStatus(),gift.getReason(),"PENDING_REVIEW".equals(gift.getStatus())?null:gift.getFirstReceivedAt(),gift.getPendingPayload()};
             for (int i=0;i<values.length;i++) ps.setObject(i+1,values[i]);
             return ps;
         },holder);
@@ -56,7 +56,7 @@ public class LedgerStore {
     }
     public void book(long id,GiftData gift,long bookedAt) {
         jdbc.update("INSERT INTO "+Periods.detailTable(gift.getStorageMonth())+"(receipt_id,game,platform,faction,zhubo,user_id,gift_id,gift_num,gift_value,score_delta,rule_version,event_at,first_received_at,booked_at,day_start,cycle_start) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                id,gift.getGame(),gift.getPlatform(),gift.getFaction(),gift.getZhubo(),gift.getUserId(),gift.getGiftId(),gift.getGiftNum(),gift.getGiftValue(),gift.getScoreDelta(),ScoreRules.VERSION,gift.getEventAt(),gift.getFirstReceivedAt(),bookedAt,Periods.day(gift.getEventAt()),Periods.cycle(gift.getEventAt()));
+                id,gift.getGame(),gift.getPlatform(),gift.getFaction(),gift.getZhubo(),gift.getUserId(),gift.getGiftId(),gift.getGiftNum(),gift.getGiftValue(),gift.getScoreDelta(),gift.getRuleVersion(),gift.getEventAt(),gift.getFirstReceivedAt(),bookedAt,Periods.day(gift.getEventAt()),Periods.cycle(gift.getEventAt()));
         addCounter(gift,0,Periods.day(gift.getEventAt()),bookedAt);
         addCounter(gift,1,Periods.cycle(gift.getEventAt()),bookedAt);
         jdbc.update("INSERT INTO user_profile(game,platform,faction,zhubo,user_id,profile_at,created_at,updated_at) VALUES(?,?,?,?,?,0,?,?) ON DUPLICATE KEY UPDATE updated_at=GREATEST(updated_at,VALUES(updated_at))",
@@ -71,7 +71,7 @@ public class LedgerStore {
     }
     public boolean completeReview(long id,GiftData gift,String operator,String reason,long now) {
         return jdbc.update("UPDATE gift_receipt SET status='BOOKED',reason_code=NULL,user_id=?,event_at=?,score_delta=?,rule_version=?,completed_at=?,reviewed_by=?,review_reason=?,reviewed_at=? WHERE id=? AND status='PENDING_REVIEW'",
-                gift.getUserId(),gift.getEventAt(),gift.getScoreDelta(),ScoreRules.VERSION,now,operator,reason,now,id)==1;
+                gift.getUserId(),gift.getEventAt(),gift.getScoreDelta(),gift.getRuleVersion(),now,operator,reason,now,id)==1;
     }
     public List<Counter> pending(long after,int limit) {
         return jdbc.query("SELECT id,game,platform,faction,zhubo,user_id,rank_type,period_start,revision FROM score_total WHERE sync_pending=TRUE AND id>? ORDER BY id LIMIT ?",(rs,n)->{

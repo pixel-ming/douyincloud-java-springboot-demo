@@ -8,6 +8,7 @@ public class GiftData {
     private String appId, roomId, msgType, msgId, game, platform, faction, zhubo, userId;
     private String giftId, fingerprint, storageMonth, status, reason, pendingPayload, nickname, avatar;
     private String reviewPayload;
+    private String ruleVersion=ScoreRules.VERSION;
     private Long giftNum, eventAt, scoreDelta;
     private BigDecimal giftValue;
     private long firstReceivedAt;

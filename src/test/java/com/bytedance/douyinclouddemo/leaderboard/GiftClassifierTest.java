@@ -23,6 +23,30 @@ class GiftClassifierTest {
             assertEquals("PENDING_REVIEW",gift.getStatus());assertEquals("SPECIAL_GIFT",gift.getReason());
         }
     }
+    @Test void luckyCubeUsesOneDiamondInsteadOfRandomEffectValueOrQuantity()throws Exception{
+        ObjectNode n=node();n.put("sec_magic_gift_id",GiftClassifier.LUCKY_CUBE_ID);n.put("gift_value",190);n.put("gift_num",19);
+        GiftData gift=classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW);
+        assertEquals("BOOKED",gift.getStatus());assertEquals(3L,gift.getScoreDelta().longValue());
+        assertEquals(new java.math.BigDecimal("190"),gift.getGiftValue());assertEquals(19L,gift.getGiftNum().longValue());
+        assertEquals(GiftClassifier.LUCKY_CUBE_RULE,gift.getRuleVersion());assertNull(gift.getPendingPayload());
+        n.put("gift_value",10);n.put("gift_num",1);
+        GiftData low=classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW);
+        assertEquals(3L,low.getScoreDelta().longValue());assertNotEquals(gift.getFingerprint(),low.getFingerprint());
+        assertEquals(ScoreRules.VERSION,Fixtures.gift().getRuleVersion());
+    }
+    @Test void luckyCubeStillFiltersTestsAndRejectsInvalidData()throws Exception{
+        ObjectNode n=node();n.put("sec_magic_gift_id",GiftClassifier.LUCKY_CUBE_ID);n.put("test",true);
+        GiftData test=classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW);
+        assertEquals("FILTERED",test.getStatus());assertEquals("TEST_MESSAGE",test.getReason());
+        for(String field:new String[]{"sec_openid","sec_gift_id","gift_num","gift_value","timestamp"}){
+            n=node();n.put("sec_magic_gift_id",GiftClassifier.LUCKY_CUBE_ID);n.remove(field);
+            assertEquals("PENDING_REVIEW",classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW).getStatus());
+        }
+        n=node();n.put("sec_magic_gift_id",GiftClassifier.LUCKY_CUBE_ID);n.put("gift_value",-1);
+        assertEquals("INVALID_VALUE",classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW).getReason());
+        n=node();n.put("sec_magic_gift_id",GiftClassifier.LUCKY_CUBE_ID);
+        assertEquals("LATE_EVENT",classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW+Periods.BACKFILL_MILLIS+1).getReason());
+    }
     @Test void lateEventIsKeptWithOriginalRoutingAndPayload()throws Exception{GiftData g=classifier.classify(Fixtures.app(),"room1",node(),Fixtures.NOW+Periods.BACKFILL_MILLIS+1);assertEquals("PENDING_REVIEW",g.getStatus());assertEquals(Fixtures.NOW,g.getEventAt().longValue());assertNotNull(g.getPendingPayload());}
     @Test void timestampUnitsAreExplicitNotGuessed()throws Exception{ObjectNode n=node();n.put("timestamp",Fixtures.NOW/1000);assertEquals("PENDING_REVIEW",classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW).getStatus());LeaderboardProperties.App app=Fixtures.app();app.setTimestampUnit(LeaderboardProperties.TimestampUnit.SECONDS);assertEquals("BOOKED",classifier.classify(app,"room1",n,Fixtures.NOW).getStatus());}
     @Test void mutableDisplayDoesNotChangeFingerprint()throws Exception{ObjectNode n=node();String first=classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW).getFingerprint();n.put("nickname","新昵称");n.put("avatar_url","https://example.com/new.png");assertEquals(first,classifier.classify(Fixtures.app(),"room1",n,Fixtures.NOW).getFingerprint());}
