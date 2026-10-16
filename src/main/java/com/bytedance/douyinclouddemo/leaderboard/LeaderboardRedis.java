@@ -22,7 +22,7 @@ public class LeaderboardRedis {
             +"if redis.call('HGET',KEYS[2],'empty')~='1' and redis.call('EXISTS',KEYS[1])==0 then return {'ERROR'} end ";
     private static final DefaultRedisScript<Long> WRITE=new DefaultRedisScript<>(
             "local status=redis.call('HGET',KEYS[2],'status'); if status~='BUILDING' and status~='COMPLETE' then return -1 end "
-            +"if status=='COMPLETE' and redis.call('HGET',KEYS[2],'empty')~='1' and redis.call('EXISTS',KEYS[1])==0 then return -1 end "
+            +"if redis.call('HGET',KEYS[2],'empty')~='1' and redis.call('EXISTS',KEYS[1])==0 then return -1 end "
             +"if (#ARGV-2)%2~=0 then return -1 end; local needed=0; for i=3,#ARGV,2 do local score=tonumber(ARGV[i+1]); if not score or score<0 or score==math.huge or score~=score or (ARGV[2]=='1' and (score>9007199254740991 or score~=math.floor(score))) then return -1 end; if not redis.call('ZSCORE',KEYS[1],ARGV[i]) then needed=needed+1 end end "
             +"if redis.call('ZCARD',KEYS[1])+needed>tonumber(ARGV[1]) then return -2 end "
             +"for i=3,#ARGV,2 do local old=redis.call('ZSCORE',KEYS[1],ARGV[i]); if not old or tonumber(ARGV[i+1])>tonumber(old) then redis.call('ZADD',KEYS[1],ARGV[i+1],ARGV[i]) end end "
@@ -31,10 +31,14 @@ public class LeaderboardRedis {
             +"elseif redis.call('PTTL',KEYS[1])==-1 then local ttl=redis.call('PTTL',KEYS[2]); if ttl>=0 then redis.call('PEXPIRE',KEYS[1],ttl) end end; return 1",Long.class);
     private static final DefaultRedisScript<Long> COMPLETE=new DefaultRedisScript<>(
             "if redis.call('HGET',KEYS[2],'status')~='BUILDING' then return 0 end "
+            +"if redis.call('HGET',KEYS[2],'empty')~='1' and redis.call('EXISTS',KEYS[1])==0 then return 0 end "
             +"redis.call('HSET',KEYS[2],'status','COMPLETE','empty',redis.call('ZCARD',KEYS[1])==0 and '1' or '0'); "
             +"redis.call('PEXPIREAT',KEYS[1],ARGV[1]); redis.call('PEXPIREAT',KEYS[2],ARGV[1]); return 1",Long.class);
     private static final DefaultRedisScript<Long> REPAIR_TTL=new DefaultRedisScript<>(
             "for i=1,#KEYS do local ttl=redis.call('PTTL',KEYS[i]); if ttl==-1 or (ttl>=0 and tonumber(ARGV[1])<=tonumber(ARGV[2])) then redis.call('PEXPIREAT',KEYS[i],ARGV[1]) end end; return 1",Long.class);
+    private static final DefaultRedisScript<Long> RETIRE=new DefaultRedisScript<>(
+            "if redis.call('EXISTS',KEYS[2])==1 then redis.call('HSET',KEYS[2],'status','RETIRED') end "
+            +"for i=1,#KEYS do local ttl=redis.call('PTTL',KEYS[i]); if ttl==-1 or ttl>30000 then redis.call('PEXPIRE',KEYS[i],30000) end end; return 1",Long.class);
     @SuppressWarnings("rawtypes")
     private static final DefaultRedisScript<List> SCAN_PAGE=new DefaultRedisScript<>(
             "return redis.call('SCAN',ARGV[1],'MATCH',ARGV[2],'COUNT',ARGV[3])",List.class);
@@ -51,6 +55,9 @@ public class LeaderboardRedis {
             "if redis.call('HGET',KEYS[1],'token')~=ARGV[1] or redis.call('HGET',KEYS[1],'sequence')~=ARGV[2] then return 0 end;redis.call('HSET',KEYS[1],'sequence',ARGV[3]);return 1",Long.class);
     @SuppressWarnings("rawtypes")
     private static final DefaultRedisScript<List> READABLE=new DefaultRedisScript<>(CHECK+"return {'OK'}",List.class);
+    public static class InvalidCacheException extends RankException {
+        public InvalidCacheException(){super(503,50301,"排行榜暂不可用");}
+    }
     public String key(CacheBoard board,String generation) {
         return "lb:v2:"+properties.getEnvironment()+":"+board.identity()+":g"+generation;
     }
@@ -70,15 +77,18 @@ public class LeaderboardRedis {
             args.add(user);args.add(Double.toString(value));
         });
         Long result=redis.execute(WRITE,keys(board,generation),args.toArray());
+        if(Long.valueOf(-1).equals(result))throw new InvalidCacheException();
         if(result==null || result!=1)throw RankException.unavailable();
     }
     public void complete(CacheBoard board,String generation) {
         Long result=redis.execute(COMPLETE,keys(board,generation),Long.toString(Math.addExact(board.getPeriodEnd(),Periods.CACHE_GRACE_MILLIS)));
+        if(Long.valueOf(0).equals(result))throw new InvalidCacheException();
         if(result==null||result!=1)throw RankException.unavailable();
     }
     public boolean readable(CacheBoard board) {
         List<?> result=redis.execute(READABLE,keys(board,board.getActiveGeneration()));
-        return result!=null&&!result.isEmpty()&&"OK".equals(result.get(0));
+        if(result!=null&&!result.isEmpty()&&"ERROR".equals(result.get(0)))return false;
+        check(result);return true;
     }
     public Map<String,Double> top(CacheBoard board,int limit) {
         if(limit<=0||limit>1000)throw RankException.badRequest("limit必须在1到1000之间");
@@ -94,7 +104,10 @@ public class LeaderboardRedis {
         Map<String,Double> result=new LinkedHashMap<>();int i=1;
         for(String user:users){String value=rows.get(i++).toString();result.put(user,value.isEmpty()?0D:Double.valueOf(value));}return result;
     }
-    private void check(List<?> rows) { if(rows==null||rows.isEmpty()||!"OK".equals(rows.get(0)))throw RankException.unavailable(); }
+    private void check(List<?> rows) {
+        if(rows!=null&&!rows.isEmpty()&&"ERROR".equals(rows.get(0)))throw new InvalidCacheException();
+        if(rows==null||rows.isEmpty()||!"OK".equals(rows.get(0)))throw RankException.unavailable();
+    }
     public boolean healthy(CacheStateStore.Lease lease) {
         List<Object> values=redis.opsForHash().multiGet(markerKey(),Arrays.asList("token","sequence"));
         return values.size()==2 && Long.toString(lease.getToken()).equals(values.get(0)) && Long.toString(lease.getSequence()).equals(values.get(1));
@@ -113,8 +126,7 @@ public class LeaderboardRedis {
     public void drop(CacheBoard board,String generation) { if(generation!=null)redis.unlink(keys(board,generation)); }
     public void retire(CacheBoard board,String generation) {
         if(generation==null)return;
-        String key=key(board,generation);redis.opsForHash().put(key+":meta","status","RETIRED");
-        redis.expire(key,30,TimeUnit.SECONDS);redis.expire(key+":meta",30,TimeUnit.SECONDS);
+        if(!Long.valueOf(1).equals(redis.execute(RETIRE,keys(board,generation))))throw RankException.unavailable();
     }
     public void repairExpirations(long now,int limit,List<CacheBoard> referenced) {
         Set<String> live=new HashSet<>();

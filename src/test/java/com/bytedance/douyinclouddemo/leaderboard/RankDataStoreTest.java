@@ -1,14 +1,80 @@
 package com.bytedance.douyinclouddemo.leaderboard;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.jdbc.core.namedparam.*;
 import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.*;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 class RankDataStoreTest {
+    @Nested class Streaming {
+        private final DataSource source=mock(DataSource.class);
+        private final Connection connection=mock(Connection.class);
+        private final PreparedStatement statement=mock(PreparedStatement.class);
+        private final ResultSet rows=mock(ResultSet.class);
+        private final RankDataStore store=new RankDataStore(new NamedParameterJdbcTemplate(source),Fixtures.mapper());
+        private final CacheBoard board=Fixtures.board(0);
+        @BeforeEach void prepare()throws Exception{
+            when(source.getConnection()).thenReturn(connection);when(connection.prepareStatement(anyString())).thenReturn(statement);
+            when(statement.getConnection()).thenReturn(connection);when(statement.executeQuery()).thenReturn(rows);
+        }
+        @Test void oneAggregateStreamsBoundedBatchesIncludingZeroScores()throws Exception{
+            when(rows.next()).thenReturn(true,true,true,false);when(rows.getString("user_id")).thenReturn("u1","u2","u3");
+            when(rows.getDouble("daily_kill_sum")).thenReturn(0D,20D,30D);
+            List<Map<String,Double>> batches=new ArrayList<>();store.streamScores(board,2,120,batches::add);
+            assertEquals(2,batches.size());assertEquals(Arrays.asList("u1","u2"),new ArrayList<>(batches.get(0).keySet()));
+            assertEquals(0D,batches.get(0).get("u1"));assertEquals(Collections.singletonMap("u3",30D),batches.get(1));
+            verify(statement,times(1)).executeQuery();verify(statement).setFetchSize(Integer.MIN_VALUE);verify(statement).setQueryTimeout(120);
+            org.mockito.InOrder order=inOrder(connection,rows);
+            order.verify(connection).setNetworkTimeout(any(),eq(120000));order.verify(rows).close();order.verify(connection).setNetworkTimeout(any(),eq(0));
+            verify(statement).close();verify(connection).close();
+            ArgumentCaptor<String> sql=ArgumentCaptor.forClass(String.class);verify(connection).prepareStatement(sql.capture());
+            assertTrue(sql.getValue().endsWith("ORDER BY user_id"));assertFalse(sql.getValue().contains("LIMIT"));assertFalse(sql.getValue().contains("user_id>"));
+            assertTrue(sql.getValue().contains("UNION ALL"));assertTrue(sql.getValue().contains("b.status='IMPORTED'"));
+            for(RankMetric metric:RankMetric.values())assertTrue(sql.getValue().contains(metric.column+"<>0"));
+        }
+        @Test void emptyResultDoesNotEmitABatch()throws Exception{
+            store.streamScores(board,2,120,batch->fail("empty batch"));verify(statement).executeQuery();verify(rows).close();
+        }
+        @Test void fullFinalBatchIsNotWrittenTwice()throws Exception{
+            when(rows.next()).thenReturn(true,true,false);when(rows.getString("user_id")).thenReturn("u1","u2");
+            List<Map<String,Double>> batches=new ArrayList<>();store.streamScores(board,2,120,batches::add);
+            assertEquals(1,batches.size());assertEquals(2,batches.get(0).size());
+        }
+        @Test void failedRedisBatchClosesTheStreamAndRestoresStricterNetworkTimeout()throws Exception{
+            when(connection.getNetworkTimeout()).thenReturn(3000);when(statement.getQueryTimeout()).thenReturn(30);
+            when(rows.next()).thenReturn(true);when(rows.getString("user_id")).thenReturn("u1");
+            assertThrows(RankException.class,()->store.streamScores(board,1,120,batch->{throw RankException.unavailable();}));
+            verify(rows).close();verify(statement).close();verify(connection).close();
+            verify(connection,times(2)).setNetworkTimeout(any(),eq(3000));verify(statement).setQueryTimeout(30);
+        }
+        @Test void invalidScoresFailBeforeReachingRedis()throws Exception{
+            for(double score:new double[]{-1D,Double.NaN,Double.POSITIVE_INFINITY,0.5D,9007199254740992D}){
+                when(rows.next()).thenReturn(true);when(rows.getDouble("daily_kill_sum")).thenReturn(score);
+                assertEquals(40902,assertThrows(RankException.class,()->store.streamScores(board,1,120,batch->fail("invalid score"))).getCode());
+            }
+            verify(rows,times(5)).close();
+        }
+        @Test void elapsedBudgetFailsEvenForAnEmptyStream()throws Exception{
+            assertThrows(RankException.class,()->store.streamScores(board,2,0,batch->fail("expired")));
+            verify(rows).close();verify(statement).close();
+        }
+        @Test void interruptionDuringRedisWriteCannotFinishTheSnapshot()throws Exception{
+            when(rows.next()).thenReturn(true,false);when(rows.getString("user_id")).thenReturn("u1");
+            try{
+                assertThrows(RankException.class,()->store.streamScores(board,1,120,batch->Thread.currentThread().interrupt()));
+                assertTrue(Thread.currentThread().isInterrupted());verify(rows).close();verify(statement).close();
+            }finally{Thread.interrupted();}
+        }
+    }
     @Test void newRowTimesKeepRfc3339SecondsAndMilliseconds(){
         long second=Instant.parse("2026-10-13T00:00:00Z").toEpochMilli();
         assertEquals("2026-10-13T08:00:00+08:00",RankDataStore.time(second));

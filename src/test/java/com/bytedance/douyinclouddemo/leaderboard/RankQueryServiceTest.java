@@ -34,7 +34,21 @@ class RankQueryServiceTest {
     @Test void coldBoardReturnsUnavailable(){CacheBoard cold=Fixtures.board(1);cold.setActiveGeneration(null);cold.setStatus("REQUESTED");when(states.ensure(any(),anyLong(),anyLong(),anyInt())).thenReturn(cold);assertEquals(503,assertThrows(RankException.class,()->service.query(request)).getHttpStatus());verifyNoInteractions(redis,ranks);}
     @Test void failureFallbackExpires(){List<RankEntry> rows=service.query(request);clock.millis+=2000;doThrow(RankException.unavailable()).when(migrations).assertQueryable(any());assertEquals(rows,service.query(request));clock.millis+=28001;assertThrows(RankException.class,()->service.query(request));}
     @Test void dayBoundaryDoesNotReturnOldPeriod(){service.query(request);clock.millis=Periods.end(0,Periods.day(Fixtures.NOW))+1;doThrow(RankException.unavailable()).when(migrations).assertQueryable(any());assertThrows(RankException.class,()->service.query(request));}
-    @Test void cacheReadFailureRequestsRebuild(){doThrow(RankException.unavailable()).when(redis).top(any(),anyInt());assertThrows(RankException.class,()->service.query(request));verify(states).requestRebuild(any());}
+    @Test void damagedCacheRequestsRebuild(){doThrow(new LeaderboardRedis.InvalidCacheException()).when(redis).top(any(),anyInt());assertThrows(RankException.class,()->service.query(request));verify(states).requestRebuild(any());}
+    @Test void temporaryRedisFailureUsesSamePeriodFallbackWithoutRebuild(){
+        List<RankEntry> previous=service.query(request);clock.millis+=2000;
+        doThrow(new org.springframework.data.redis.RedisConnectionFailureException("temporary")).when(redis).top(any(),anyInt());
+        assertEquals(previous,service.query(request));clock.millis+=30000;
+        assertThrows(RankException.class,()->service.query(request));verify(states,never()).requestRebuild(any());
+    }
+    @Test void retainedInvalidGenerationIsNotQueryable(){
+        for(String status:new String[]{"REQUESTED","BUILDING","EXPIRED"}){
+            CacheBoard board=Fixtures.board(1);board.setStatus(status);when(states.ensure(any(),anyLong(),anyLong(),anyInt())).thenReturn(board);
+            assertThrows(RankException.class,()->service.query(request));
+        }
+        verifyNoInteractions(redis,ranks);
+    }
+    @Test void cycleBoundaryDoesNotReturnOldPeriod(){service.query(request);clock.millis=Periods.end(1,Periods.cycle(Fixtures.NOW))+1;doThrow(RankException.unavailable()).when(migrations).assertQueryable(any());assertThrows(RankException.class,()->service.query(request));}
     @Test void invalidSortAndLimitAreRejected(){request.setOrderBy("unknown");assertThrows(RankValidationException.class,()->service.query(request));request.setOrderBy(null);request.setLimit(1001);assertThrows(RankValidationException.class,()->service.query(request));verifyNoInteractions(states,redis,ranks,migrations);}
     @Test void caseAliasesUseTheSameCanonicalBoard(){RankScope canonical=new RankScope("BJGYB2",null,null,null);when(scopes.find(any())).thenReturn(canonical);request.setGame("bjgyb2");service.query(request);verify(migrations).assertQueryable(canonical);verify(states).ensure(eq(canonical),anyLong(),anyLong(),eq(1));}
     @Test void unknownScopeIsEmptyOnlyAfterMigrationGate(){when(scopes.find(any())).thenReturn(null);assertTrue(service.query(request).isEmpty());verify(migrations).assertQueryable(request.scope());verifyNoInteractions(states,redis,ranks);doThrow(RankException.unavailable()).when(migrations).assertQueryable(any());assertThrows(RankException.class,()->service.query(request));}

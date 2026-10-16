@@ -20,6 +20,14 @@ class CacheStateStoreTest {
     private final CacheStateStore.Lease expected=new CacheStateStore.Lease("owner",1,3,0,Fixtures.NOW+30000);
     @BeforeEach @SuppressWarnings("unchecked") void prepare(){when(jdbc.queryForObject(contains("UNIX_TIMESTAMP"),eq(Long.class))).thenReturn(Fixtures.NOW);when(jdbc.queryForObject(contains("FOR UPDATE"),any(RowMapper.class),eq("local"))).thenReturn(expected);}
     @Test void matchingRegistryAndLeaseCanConfirmReadVersion(){assertTrue(states.acknowledge(expected,Collections.singletonList(Fixtures.counter()),1));verify(ledger).acknowledge(anyList());}
+    @Test void invalidationRetainsGenerationAndOnlyChangesTheMatchingReadyBoard(){
+        CacheBoard board=Fixtures.board(1);
+        String sql="UPDATE rank_cache_state SET status=IF(building_generation IS NULL,'REQUESTED','BUILDING'),retry_after=0 WHERE scope_id=? AND rank_type=? AND day_start=? AND cycle_start=? AND status='READY' AND active_generation=?";
+        when(jdbc.update(eq(sql),eq(board.getScope().id()),eq(1),eq(board.getDayStart()),eq(board.getCycleStart()),eq("active"))).thenReturn(1,0);
+        states.requestRebuild(board);states.requestRebuild(board);
+        verify(jdbc,times(2)).update(sql,board.getScope().id(),1,board.getDayStart(),board.getCycleStart(),"active");
+        verify(jdbc,times(1)).update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?","local");
+    }
     @Test @SuppressWarnings("unchecked") void changedRegistryCannotClearSharedPending(){when(jdbc.queryForObject(contains("FOR UPDATE"),any(RowMapper.class),eq("local"))).thenReturn(new CacheStateStore.Lease("owner",1,4,0,Fixtures.NOW+30000));assertFalse(states.acknowledge(expected,Collections.singletonList(Fixtures.counter()),1));verifyNoInteractions(ledger);}
     @Test @SuppressWarnings("unchecked") void staleOwnerCannotConfirmOrPublish(){when(jdbc.queryForObject(contains("FOR UPDATE"),any(RowMapper.class),eq("local"))).thenReturn(new CacheStateStore.Lease("new-owner",2,3,0,Fixtures.NOW+30000));assertFalse(states.acknowledge(expected,Collections.singletonList(Fixtures.counter()),1));assertFalse(states.publish(Fixtures.board(0),"build",expected,"evidence"));verifyNoInteractions(ledger);}
     @Test @SuppressWarnings("unchecked") void expiredLeaseCannotConfirmReplay(){when(jdbc.queryForObject(contains("FOR UPDATE"),any(RowMapper.class),eq("local"))).thenReturn(new CacheStateStore.Lease("owner",1,3,0,Fixtures.NOW-1));Runnable update=mock(Runnable.class);assertFalse(states.confirmReplay(expected,update));verifyNoInteractions(update);}

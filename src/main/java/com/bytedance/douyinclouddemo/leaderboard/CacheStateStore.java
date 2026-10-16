@@ -121,8 +121,9 @@ public class CacheStateStore {
     public void requestRebuild(CacheBoard board) {
         new TransactionTemplate(transactions).execute(tx->{
             lockControl();
-            int changed=jdbc.update("UPDATE rank_cache_state SET active_generation=NULL,status=IF(building_generation IS NULL,'REQUESTED','BUILDING'),retry_after=0 WHERE scope_id=? AND rank_type=? AND period_start=? AND active_generation=?",
-                    board.getScope().id(),board.getRankType(),board.getPeriodStart(),board.getActiveGeneration());
+            // 失效版本保留到构建时回收；状态撤销可读资格，重复请求不再推进 registry。
+            int changed=jdbc.update("UPDATE rank_cache_state SET status=IF(building_generation IS NULL,'REQUESTED','BUILDING'),retry_after=0 WHERE scope_id=? AND rank_type=? AND day_start=? AND cycle_start=? AND status='READY' AND active_generation=?",
+                    board.getScope().id(),board.getRankType(),board.getDayStart(),board.getCycleStart(),board.getActiveGeneration());
             if(changed>0)jdbc.update("UPDATE cache_sync_control SET registry_revision=registry_revision+1 WHERE environment=?",properties.getEnvironment());return null;
         });
     }

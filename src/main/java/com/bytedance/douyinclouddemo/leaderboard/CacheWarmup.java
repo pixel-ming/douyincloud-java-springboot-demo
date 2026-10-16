@@ -23,12 +23,6 @@ public class CacheWarmup {
         if(day==lastDay&&cycle==lastCycle&&wall<checkAfter)return false;
         lastDay=day;lastCycle=cycle;checkAfter=wall+5000;
         Set<RankScope> requested=new LinkedHashSet<>();
-        for(LeaderboardProperties.App app:properties.getApps().values()) {
-            if(app.getGame()==null||app.getGame().isEmpty())continue;
-            requested.add(new RankScope(app.getGame(),null,null,null));
-            if(app.isEnabled())requested.add(new RankScope(app.getGame(),app.getPlatform(),app.getFaction(),app.getZhubo()));
-        }
-        if(!requested.isEmpty())requested.add(new RankScope(null,null,null,null));
         for(LeaderboardProperties.WarmupScope scope:properties.getWarmupScopes())requested.add(scope.toRankScope());
         Set<RankScope> registered=new HashSet<>();int deferred=0;boolean attempted=false;
         for(RankScope requestedScope:requested) {

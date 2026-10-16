@@ -21,6 +21,28 @@ class LeaderboardRedisTest {
     @Test void duplicateAndOutOfOrderRefreshNeverAddsOrLowersScore(){cache.write(board,generation,Collections.singletonMap("u1",30L));cache.write(board,generation,Collections.singletonMap("u1",30L));cache.write(board,generation,Collections.singletonMap("u1",10L));cache.complete(board,generation);assertEquals(30L,cache.top(board,10).get("u1").longValue());}
     @Test void integerNearPrecisionLimitIsExact(){cache.write(board,generation,Collections.singletonMap("u1",ScoreRules.MAX_SCORE));cache.complete(board,generation);assertEquals(ScoreRules.MAX_SCORE,cache.top(board,10).get("u1").longValue());}
     @Test void incompleteGenerationIsNeverQueryable(){cache.write(board,generation,Collections.singletonMap("u1",30L));assertThrows(RankException.class,()->cache.top(board,10));cache.complete(board,generation);assertEquals(1,cache.top(board,10).size());}
+    @Test void lostBuildingDataCannotBeRecreatedOrCompleted(){
+        cache.write(board,generation,Collections.singletonMap("u1",30L));
+        template.delete(cache.key(board,generation));
+        assertThrows(RankException.class,()->cache.write(board,generation,Collections.singletonMap("u2",20L)));
+        assertThrows(RankException.class,()->cache.complete(board,generation));
+        assertFalse(Boolean.TRUE.equals(template.hasKey(cache.key(board,generation))));
+    }
+    @Test void lossAfterTheLastBatchCannotBePublishedAsAnEmptyBoard(){
+        cache.write(board,generation,Collections.singletonMap("u1",30L));
+        template.delete(cache.key(board,generation));
+        assertThrows(RankException.class,()->cache.complete(board,generation));
+        assertThrows(RankException.class,()->cache.top(board,10));
+    }
+    @Test void retirementDoesNotExtendExpiryOrRecreateMetadata(){
+        cache.write(board,generation,Collections.singletonMap("u1",30L));cache.complete(board,generation);
+        String key=cache.key(board,generation);
+        template.expire(key,5,TimeUnit.SECONDS);template.expire(key+":meta",5,TimeUnit.SECONDS);
+        cache.retire(board,generation);cache.retire(board,generation);
+        assertTrue(template.getExpire(key,TimeUnit.MILLISECONDS)<=5000);
+        cache.drop(board,generation);cache.retire(board,generation);
+        assertFalse(Boolean.TRUE.equals(template.hasKey(key+":meta")));
+    }
     @Test void validEmptyBoardDiffersFromLostNonemptyBoard(){cache.complete(board,generation);assertTrue(cache.top(board,10).isEmpty());cache.write(board,generation,Collections.singletonMap("u1",10L));template.delete(cache.key(board,generation));assertThrows(RankException.class,()->cache.top(board,10));assertThrows(RankException.class,()->cache.write(board,generation,Collections.singletonMap("u2",20L)));assertFalse(Boolean.TRUE.equals(template.hasKey(cache.key(board,generation))));}
     @Test void firstScoreOnCompletedEmptyBoardInheritsTheRemainingExpiry(){
         board.setPeriodEnd(System.currentTimeMillis()+60000-Periods.CACHE_GRACE_MILLIS);

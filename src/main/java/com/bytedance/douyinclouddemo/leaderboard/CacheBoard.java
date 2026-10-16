@@ -9,6 +9,6 @@ public class CacheBoard {
     private long periodStart,periodEnd,dayStart,cycleStart;
     private String activeGeneration,buildingGeneration,status;
     private Long buildToken;
-    public boolean ready() { return activeGeneration!=null && !"EXPIRED".equals(status); }
+    public boolean ready() { return activeGeneration!=null && "READY".equals(status); }
     public String identity() { return scope.id()+":"+rankType+":"+dayStart+":"+cycleStart; }
 }

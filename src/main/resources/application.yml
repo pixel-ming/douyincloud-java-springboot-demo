@@ -36,8 +36,16 @@ leaderboard:
   snapshot-timeout-seconds: 120
   cloud-openapi-enabled: ${DOUYIN_CLOUD_OPENAPI_ENABLED:false}
   internal-token: ${LEADERBOARD_INTERNAL_TOKEN:}
-  # 补充实际常用分组；默认自动构建已迁移配置游戏及 ALL 的周期榜、日榜。
-  warmup-scopes: []
+  # 仅预热此名单的周期榜、日榜；其他合法分组在查询时登记构建。
+  warmup-scopes:
+    - game: BJGYB2
+      platform: DYGYB2
+      faction: ''
+      zhubo: ''
+    - game: BJGYB2
+      platform: DYGYB2
+      faction: 红方
+      zhubo: ''
   apps:
     main:
       enabled: ${DOUYIN_CALLBACK_ENABLED:false}

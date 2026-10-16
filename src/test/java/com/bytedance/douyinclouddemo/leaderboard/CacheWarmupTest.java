@@ -21,54 +21,63 @@ class CacheWarmupTest {
     private final RankScope all=new RankScope(null,null,null,null);
     @BeforeEach void prepare(){when(scopes.find(any())).thenAnswer(call->call.getArgument(0));}
     private void addGame(String name){LeaderboardProperties.App app=new LeaderboardProperties.App();app.setGame(name);props.getApps().put(name,app);}
+    private void addScope(String name){LeaderboardProperties.WarmupScope scope=new LeaderboardProperties.WarmupScope();scope.setGame(name);props.getWarmupScopes().add(scope);}
     private void nextPoll(){ReflectionTestUtils.setField(warmup,"checkAfter",0L);}
 
-    @Test void thirteenMigratedGamesCreateTwentyEightBoardsWithoutAQuery(){
+    @Test void configuredGamesAloneDoNotRegisterWarmBoards(){
         for(String name:LegacySnapshotConverter.GAMES)addGame(name);
-        warmup.register();verify(states,times(28)).ensure(any(),eq(Periods.day(clock.millis())),eq(Periods.cycle(clock.millis())),anyInt());
-        verify(states).ensure(all,Periods.day(clock.millis()),Periods.cycle(clock.millis()),1);
-        verify(states).ensure(all,Periods.day(clock.millis()),Periods.cycle(clock.millis()),0);
+        warmup.register();verifyNoInteractions(states,migrations,scopes);
+    }
+
+    @Test void configuredScopesCreateOnlyFourBoardsWithoutAQuery()throws Exception{
+        for(String name:LegacySnapshotConverter.GAMES)addGame(name);
+        MockEnvironment env=new MockEnvironment();new YamlPropertySourceLoader().load("defaults",new ClassPathResource("application.yml")).forEach(source->env.getPropertySources().addLast(source));
+        props.setWarmupScopes(Binder.get(env).bind("leaderboard",LeaderboardProperties.class).get().getWarmupScopes());
+        assertEquals(2,props.getWarmupScopes().size());warmup.register();
+        for(String faction:new String[]{null,"红方"})for(int metric:new int[]{1,0})
+            verify(states).ensure(new RankScope("BJGYB2","DYGYB2",faction,null),Periods.day(clock.millis()),Periods.cycle(clock.millis()),metric);
         assertFalse(warmup.register());verifyNoMoreInteractions(states);
     }
-    @Test void actualEnabledScopeAndExplicitAliasesAreCanonicalizedOnce(){
+    @Test void explicitAliasesAreCanonicalizedOnceWithoutImplicitAppScopes(){
         props.getApps().put("main",Fixtures.app());RankScope actual=new RankScope("BJGYB2","DYGYB2","红方",null);
         LeaderboardProperties.WarmupScope alias=new LeaderboardProperties.WarmupScope();alias.setGame("bjgyb2");alias.setPlatform("dygyb2");alias.setFaction("红方");props.getWarmupScopes().add(alias);
+        LeaderboardProperties.WarmupScope canonical=new LeaderboardProperties.WarmupScope();canonical.setGame("BJGYB2");canonical.setPlatform("DYGYB2");canonical.setFaction("红方");props.getWarmupScopes().add(canonical);
         when(scopes.find(alias.toRankScope())).thenReturn(actual);
-        warmup.register();verify(states,times(6)).ensure(any(),anyLong(),anyLong(),anyInt());
+        warmup.register();verify(states,times(2)).ensure(any(),anyLong(),anyLong(),anyInt());
         verify(states).ensure(actual,Periods.day(clock.millis()),Periods.cycle(clock.millis()),1);
         verify(states).ensure(actual,Periods.day(clock.millis()),Periods.cycle(clock.millis()),0);
     }
     @Test void stagingGamesAndIncompleteAllDoNotBecomeWarmBoards(){
-        addGame("BJGYB2");addGame("BJNC");RankScope pending=new RankScope("BJNC",null,null,null);
+        addScope("BJGYB2");addScope("BJNC");addScope(null);RankScope pending=new RankScope("BJNC",null,null,null);
         doThrow(RankException.unavailable()).when(migrations).assertQueryable(pending);doThrow(RankException.unavailable()).when(migrations).assertQueryable(all);
         warmup.register();verify(states,times(2)).ensure(eq(game),anyLong(),anyLong(),anyInt());verify(scopes,never()).find(pending);verify(scopes,never()).find(all);
         doNothing().when(migrations).assertQueryable(pending);doNothing().when(migrations).assertQueryable(all);nextPoll();warmup.register();
         verify(states).ensure(pending,Periods.day(clock.millis()),Periods.cycle(clock.millis()),1);verify(states).ensure(all,Periods.day(clock.millis()),Periods.cycle(clock.millis()),0);
     }
     @Test void missingDirectoryCannotRegisterAFakeEmptyBoard(){
-        addGame("BJGYB2");when(scopes.find(game)).thenReturn(null);when(scopes.find(all)).thenReturn(null);warmup.register();verifyNoInteractions(states);
+        addScope("BJGYB2");when(scopes.find(game)).thenReturn(null);warmup.register();verifyNoInteractions(states);
     }
     @Test void midnightAndCycleBoundaryBothRenewBoardsDespitePollThrottle(){
-        addGame("BJGYB2");warmup.register();long oldCycle=Periods.cycle(clock.millis());
+        addScope("BJGYB2");warmup.register();long oldCycle=Periods.cycle(clock.millis());
         clock.millis=Periods.end(0,Periods.day(clock.millis()));long newDay=Periods.day(clock.millis());warmup.register();
         verify(states).ensure(game,newDay,oldCycle,1);verify(states).ensure(game,newDay,oldCycle,0);
         clock.millis=Periods.end(1,oldCycle);warmup.register();
         verify(states).ensure(game,newDay,clock.millis(),1);verify(states).ensure(game,newDay,clock.millis(),0);
-        verify(states,times(12)).ensure(any(),anyLong(),anyLong(),anyInt());
+        verify(states,times(6)).ensure(any(),anyLong(),anyLong(),anyInt());
     }
     @Test void capacityDeferralDoesNotPreventOtherBoardsOrRepeatedChecks(){
-        addGame("BJGYB2");when(states.ensure(eq(game),anyLong(),anyLong(),eq(1))).thenThrow(RankException.unavailable());
+        addScope("BJGYB2");addScope(null);when(states.ensure(eq(game),anyLong(),anyLong(),eq(1))).thenThrow(RankException.unavailable());
         assertDoesNotThrow(warmup::register);verify(states).ensure(all,Periods.day(clock.millis()),Periods.cycle(clock.millis()),0);
         warmup.register();verify(states,times(4)).ensure(any(),anyLong(),anyLong(),anyInt());
         nextPoll();warmup.register();verify(states,times(8)).ensure(any(),anyLong(),anyLong(),anyInt());
     }
     @Test void databaseFailurePropagatesRatherThanLookingLikeAReadyWarmup(){
-        addGame("BJGYB2");doThrow(new IllegalStateException("database unavailable")).when(migrations).assertQueryable(game);
+        addScope("BJGYB2");doThrow(new IllegalStateException("database unavailable")).when(migrations).assertQueryable(game);
         assertThrows(IllegalStateException.class,warmup::register);verifyNoInteractions(states);
     }
     @Test void restartedRegistrarReusesEnsureWithoutInvalidatingCache(){
-        addGame("BJGYB2");warmup.register();new CacheWarmup(states,migrations,scopes,props,clock).register();
-        verify(states,times(8)).ensure(any(),anyLong(),anyLong(),anyInt());verify(states,never()).invalidateAll(any());verify(states,never()).requestRebuild(any());
+        addScope("BJGYB2");warmup.register();new CacheWarmup(states,migrations,scopes,props,clock).register();
+        verify(states,times(4)).ensure(any(),anyLong(),anyLong(),anyInt());verify(states,never()).invalidateAll(any());verify(states,never()).requestRebuild(any());
     }
     @Test void rehearsalScopesBindAndMalformedScopeFailsConfiguration()throws Exception{
         MockEnvironment env=new MockEnvironment();new YamlPropertySourceLoader().load("local",new ClassPathResource("application-local-rehearsal.yml")).forEach(source->env.getPropertySources().addLast(source));

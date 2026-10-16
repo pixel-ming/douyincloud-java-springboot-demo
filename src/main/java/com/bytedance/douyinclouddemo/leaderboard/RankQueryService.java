@@ -54,7 +54,7 @@ public class RankQueryService {
         CacheBoard board=states.ensure(scope,day,cycle,type);
         if(!board.ready())throw RankException.unavailable();
         Map<String,Double> ranked;
-        try {ranked=redis.top(board,limit);}catch(RuntimeException e){states.requestRebuild(board);throw e;}
+        try {ranked=redis.top(board,limit);}catch(LeaderboardRedis.InvalidCacheException e){states.requestRebuild(board);throw e;}
         Map<String,RankEntry> entries=ranks.entries(scope,ranked.keySet(),day,cycle);
         List<RankEntry> rows=new ArrayList<>();
         for(Map.Entry<String,Double> user:ranked.entrySet()) {

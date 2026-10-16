@@ -5,12 +5,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import java.sql.Connection;
+import java.sql.ResultSet;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @Repository
 @RequiredArgsConstructor
@@ -35,12 +39,34 @@ public class RankDataStore {
         for(RankMetric metric:RankMetric.values()){sum.append(",SUM(").append(metric.column).append(") ").append(metric.column);if(having.length()>0)having.append(" OR ");having.append(metric.column).append("<>0");}
         return sum+" FROM ("+actual+" UNION ALL "+legacy+") amounts GROUP BY user_id HAVING "+having;
     }
-    public Map<String,Double> pageScores(CacheBoard board,String after,int size) {
-        MapSqlParameterSource parameters=parameters(board.getScope(),board.getDayStart(),board.getCycleStart()).addValue("after",after).addValue("size",size);
-        String sql=totalsSql(board.getScope(),parameters," AND user_id>:after")+" ORDER BY user_id LIMIT :size";
-        Map<String,Double> scores=new LinkedHashMap<>();
-        jdbc.query(sql,parameters,rs->{double score=rs.getDouble(RankMetric.of(board.getRankType()).column);check(score,board.getRankType());scores.put(rs.getString("user_id"),score);});return scores;
+    public void streamScores(CacheBoard board,int size,int timeoutSeconds,Consumer<Map<String,Double>> batch) {
+        MapSqlParameterSource parameters=parameters(board.getScope(),board.getDayStart(),board.getCycleStart());
+        String sql=totalsSql(board.getScope(),parameters,"")+" ORDER BY user_id";
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        jdbc.execute(sql,parameters,statement->{
+            // Connector/J 的前向只读流式结果不要求全局开启 useCursorFetch。
+            statement.setFetchSize(Integer.MIN_VALUE);
+            int queryTimeout=statement.getQueryTimeout();
+            statement.setQueryTimeout(queryTimeout>0?Math.min(queryTimeout,timeoutSeconds):timeoutSeconds);
+            Connection connection=statement.getConnection();int previousTimeout=connection.getNetworkTimeout();
+            int readTimeout=Math.toIntExact(TimeUnit.SECONDS.toMillis(timeoutSeconds));
+            if(previousTimeout>0)readTimeout=Math.min(previousTimeout,readTimeout);
+            connection.setNetworkTimeout(Runnable::run,readTimeout);
+            try(ResultSet rs=statement.executeQuery()) {
+                Map<String,Double> scores=new LinkedHashMap<>();String column=RankMetric.of(board.getRankType()).column;
+                while(rs.next()) {
+                    checkDeadline(deadline);
+                    double score=rs.getDouble(column);check(score,board.getRankType());scores.put(rs.getString("user_id"),score);
+                    if(scores.size()==size){batch.accept(scores);scores=new LinkedHashMap<>();}
+                }
+                checkDeadline(deadline);
+                if(!scores.isEmpty())batch.accept(scores);
+                checkDeadline(deadline);
+            } finally {connection.setNetworkTimeout(Runnable::run,previousTimeout);}
+            return null;
+        });
     }
+    private void checkDeadline(long deadline){if(Thread.currentThread().isInterrupted()||System.nanoTime()-deadline>=0)throw RankException.unavailable();}
     public Map<String,Double> scores(CacheBoard board,Collection<String> users) {
         if(users.isEmpty())return Collections.emptyMap();
         MapSqlParameterSource parameters=parameters(board.getScope(),board.getDayStart(),board.getCycleStart()).addValue("users",users);
